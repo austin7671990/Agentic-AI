@@ -19,6 +19,11 @@ class AgentController extends GetxController {
   final RxString lastResponse = ''.obs;
   final RxList<Map<String, dynamic>> executionLog = <Map<String, dynamic>>[].obs;
 
+  // -- Pending confirmation state (exposed for UI) --
+  final RxnString pendingToolName = RxnString();
+  final Rx<Map<String, dynamic>> pendingToolParams = Rx<Map<String, dynamic>>({});
+  final RxnString pendingOriginalMessage = RxnString();
+
   /// Main entry: process a user message through the agent loop
   Future<String> processMessage(String userMessage) async {
     state.value = AgentState.planning;
@@ -90,19 +95,7 @@ class AgentController extends GetxController {
       state.value = AgentState.idle;
       currentAction.value = '';
 
-      await _memory.storeConversationTurn(ConversationTurn(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        role: 'user',
-        content: userMessage,
-        timestamp: DateTime.now(),
-      ));
-
-      await _memory.storeConversationTurn(ConversationTurn(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        role: 'assistant',
-        content: rawResponse,
-        timestamp: DateTime.now(),
-      ));
+      await _storeConversation(userMessage, rawResponse);
 
       // Extract facts from conversation
       await _memory.extractAndStoreFacts('$userMessage $rawResponse');
@@ -112,6 +105,7 @@ class AgentController extends GetxController {
     } catch (e) {
       state.value = AgentState.error;
       currentAction.value = 'Error: $e';
+      _clearPendingConfirmation();
       return 'I encountered an error: $e';
     }
   }
@@ -122,10 +116,52 @@ class AgentController extends GetxController {
     if (_tools.requiresConfirmation(call.toolName)) {
       state.value = AgentState.confirming;
       currentAction.value = 'Confirm: ${call.toolName}(${call.parameters})';
-      return '[CONFIRM_REQUIRED] I need to run `${call.toolName}` with parameters: ${call.parameters}. Say "yes" to allow, or tell me what to do instead.';
+      // Store pending confirmation for UI
+      pendingToolName.value = call.toolName;
+      pendingToolParams.value = Map<String, dynamic>.from(call.parameters);
+      pendingOriginalMessage.value = originalMessage;
+      return '[CONFIRM_REQUIRED] I need to run `${call.toolName}` with parameters: ${call.parameters}. Say "yes" to allow, or tap the buttons below.';
     }
 
-    // Execute tool
+    // Execute tool directly (no confirmation needed)
+    return _executeToolDirect(call, originalMessage);
+  }
+
+  /// User confirmed a pending action via UI button
+  Future<String> confirmPendingAction() async {
+    final toolName = pendingToolName.value;
+    final params = pendingToolParams.value;
+    final originalMsg = pendingOriginalMessage.value;
+
+    if (toolName == null || originalMsg == null) {
+      state.value = AgentState.error;
+      currentAction.value = 'No pending confirmation';
+      return 'Error: No pending action to confirm.';
+    }
+
+    _clearPendingConfirmation();
+    final call = ToolCall(
+      toolName: toolName,
+      parameters: params,
+      callId: DateTime.now().millisecondsSinceEpoch.toString(),
+    );
+    return _executeToolDirect(call, originalMsg);
+  }
+
+  /// User denied/cancelled a pending action
+  void denyPendingAction() {
+    _clearPendingConfirmation();
+    state.value = AgentState.idle;
+    currentAction.value = '';
+  }
+
+  void _clearPendingConfirmation() {
+    pendingToolName.value = null;
+    pendingToolParams.value = {};
+    pendingOriginalMessage.value = null;
+  }
+
+  Future<String> _executeToolDirect(ToolCall call, String originalMessage) async {
     state.value = AgentState.executingTool;
     currentAction.value = 'Running ${call.toolName}...';
 
@@ -145,7 +181,7 @@ class AgentController extends GetxController {
 
     final followUpMessages = <Map<String, String>>[
       {'role': 'user', 'content': originalMessage},
-      {'role': 'assistant', 'content': 'I used `${call.toolName}` and got: ${result.data ?? result.error}'},
+      {'role': 'assistant', 'content': 'I used `${call.toolName}` and got: ${result.success ? result.data : result.error}'},
     ];
 
     final responseBuffer = StringBuffer();
@@ -155,20 +191,7 @@ class AgentController extends GetxController {
 
     final finalResponse = responseBuffer.toString();
 
-    // Store conversation
-    await _memory.storeConversationTurn(ConversationTurn(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      role: 'user',
-      content: originalMessage,
-      timestamp: DateTime.now(),
-    ));
-
-    await _memory.storeConversationTurn(ConversationTurn(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      role: 'assistant',
-      content: finalResponse,
-      timestamp: DateTime.now(),
-    ));
+    await _storeConversation(originalMessage, finalResponse);
 
     state.value = AgentState.idle;
     currentAction.value = '';
@@ -176,46 +199,19 @@ class AgentController extends GetxController {
     return finalResponse;
   }
 
-  /// User confirmed a pending action
-  Future<String> confirmAction(String toolName, Map<String, dynamic> params, String originalMessage) async {
-    final call = ToolCall(toolName: toolName, parameters: params, callId: DateTime.now().millisecondsSinceEpoch.toString());
-    return _executeToolDirect(call, originalMessage);
-  }
-
-  Future<String> _executeToolDirect(ToolCall call, String originalMessage) async {
-    state.value = AgentState.executingTool;
-    currentAction.value = 'Running ${call.toolName}...';
-
-    final result = await _tools.executeTool(call);
-
-    final followUpMessages = <Map<String, String>>[
-      {'role': 'user', 'content': originalMessage},
-      {'role': 'assistant', 'content': 'I ran `${call.toolName}` and got: ${result.success ? result.data : result.error}'},
-    ];
-
-    final responseBuffer = StringBuffer();
-    await for (final chunk in _llm.generate(messages: followUpMessages)) {
-      responseBuffer.write(chunk);
-    }
-
-    final finalResponse = responseBuffer.toString();
-
+  Future<void> _storeConversation(String userMessage, String assistantResponse) async {
     await _memory.storeConversationTurn(ConversationTurn(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       role: 'user',
-      content: originalMessage,
+      content: userMessage,
       timestamp: DateTime.now(),
     ));
 
     await _memory.storeConversationTurn(ConversationTurn(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       role: 'assistant',
-      content: finalResponse,
+      content: assistantResponse,
       timestamp: DateTime.now(),
     ));
-
-    state.value = AgentState.idle;
-    currentAction.value = '';
-    return finalResponse;
   }
 }
