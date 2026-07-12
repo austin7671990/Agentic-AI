@@ -3,6 +3,11 @@ import 'dart:io';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/services.dart';
+
+const _accessibilityChannel = MethodChannel(
+  'com.portableai.portable_ai_flutter/accessibility',
+);
 
 Future<Map<String, dynamic>> deviceScan() async {
   final deviceInfo = DeviceInfoPlugin();
@@ -71,9 +76,26 @@ Future<String> openApp(String packageName) async {
 }
 
 Future<String> readScreen() async {
-  return 'Screen reading requires AccessibilityService to be enabled. Go to Settings > Accessibility > Agentic AI > Enable.';
+  try {
+    final result = await _accessibilityChannel.invokeMethod<String>('readScreen');
+    return result ?? 'No content returned from accessibility service.';
+  } on PlatformException catch (e) {
+    return 'Screen reading failed: ${e.message}. Ensure Accessibility Service is enabled in Settings > Accessibility > Agentic AI.';
+  } catch (e) {
+    return 'Screen reading error: $e';
+  }
 }
 
 Future<String> takeScreenshot() async {
-  return 'Screenshot requires AccessibilityService. Use device screenshot button instead.';
+  try {
+    final result = await _accessibilityChannel.invokeMethod<String>('takeScreenshot');
+    return result ?? 'Screenshot completed.';
+  } on PlatformException catch (e) {
+    if (e.code == 'UNSUPPORTED') {
+      return 'Screenshots require Android 12+ (API 31).';
+    }
+    return 'Screenshot failed: ${e.message}. Ensure Accessibility Service is enabled.';
+  } catch (e) {
+    return 'Screenshot error: $e';
+  }
 }
