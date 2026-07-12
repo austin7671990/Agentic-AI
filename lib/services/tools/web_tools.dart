@@ -1,6 +1,35 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:html_unescape/html_unescape.dart';
+
+// Minimal HTML entity decoder — handles common entities without extra dependency
+String _decodeHtml(String html) {
+  return html
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&apos;', "'")
+      .replaceAll('&#x27;', "'")
+      .replaceAll('&#x2F;', '/')
+      .replaceAll('&#x60;', '`')
+      .replaceAll('&#x3D;', '=')
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&ndash;', '-')
+      .replaceAll('&mdash;', '-')
+      .replaceAll('&rsquo;', "'")
+      .replaceAll('&lsquo;', "'")
+      .replaceAll('&rdquo;', '"')
+      .replaceAll('&ldquo;', '"')
+      .replaceAll(RegExp(r'&#(\d+);'), (m) {
+        final code = int.tryParse(m.group(1) ?? '0') ?? 0;
+        return String.fromCharCode(code);
+      })
+      .replaceAll(RegExp(r'&#x([0-9a-fA-F]+);'), (m) {
+        final code = int.tryParse(m.group(1) ?? '0', radix: 16) ?? 0;
+        return String.fromCharCode(code);
+      });
+}
 
 Future<String> webSearch(String query) async {
   try {
@@ -27,11 +56,10 @@ Future<String> webSearch(String query) async {
       dotAll: true,
     ).allMatches(html);
 
-    final unescape = HtmlUnescape();
     for (final match in resultBlocks.take(5)) {
       final url = match.group(1) ?? '';
-      final title = unescape.convert(match.group(2)?.replaceAll(RegExp(r'<[^>]+>'), '') ?? '');
-      final snippet = unescape.convert(match.group(3)?.replaceAll(RegExp(r'<[^>]+>'), '') ?? '');
+      final title = _decodeHtml(match.group(2)?.replaceAll(RegExp(r'<[^>]+>'), '') ?? '');
+      final snippet = _decodeHtml(match.group(3)?.replaceAll(RegExp(r'<[^>]+>'), '') ?? '');
       results.add({
         'title': title.trim(),
         'url': url.trim(),
