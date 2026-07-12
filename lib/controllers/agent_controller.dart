@@ -5,6 +5,7 @@ import '../services/tool_service.dart';
 import '../services/context_assembler.dart';
 import '../services/memory_service.dart';
 import '../models/tool_model.dart';
+import '../models/memory_model.dart';
 
 enum AgentState { idle, planning, executingTool, observing, confirming, error }
 
